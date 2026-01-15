@@ -3,6 +3,27 @@ import type { Bot } from "grammy";
 const TELEGRAM_DRAFT_MAX_CHARS = 4096;
 const DEFAULT_THROTTLE_MS = 300;
 
+/**
+ * Sanitize draft text to prevent raw API errors from being shown in typing previews.
+ * This is a final safety net - errors should be formatted earlier in the pipeline.
+ */
+function sanitizeDraftText(text: string): string {
+  const trimmed = text.trim();
+
+  // Pattern 1: HTTP status code errors (e.g., "400 Incorrect role information")
+  if (/^\d{3}\s+/i.test(trimmed)) {
+    console.warn("[Telegram/Draft] Blocked raw API error from draft preview:", trimmed.slice(0, 100));
+    return "An error occurred. Please try again or use /new to start a fresh session.";
+  }
+
+  // Pattern 2: Role ordering errors that escaped earlier formatting
+  if (/incorrect role information|roles must alternate/i.test(trimmed)) {
+    return "Message ordering conflict - please try again. If this persists, use /new to start a fresh session.";
+  }
+
+  return text;
+}
+
 export type TelegramDraftStream = {
   update: (text: string) => void;
   flush: () => Promise<void>;
@@ -47,11 +68,13 @@ export function createTelegramDraftStream(params: {
       params.warn?.(`telegram draft stream stopped (draft length ${trimmed.length} > ${maxChars})`);
       return;
     }
-    if (trimmed === lastSentText) return;
-    lastSentText = trimmed;
+
+    const sanitized = sanitizeDraftText(trimmed);
+    if (sanitized === lastSentText) return;
+    lastSentText = sanitized;
     lastSentAt = Date.now();
     try {
-      await params.api.sendMessageDraft(chatId, draftId, trimmed, threadParams);
+      await params.api.sendMessageDraft(chatId, draftId, sanitized, threadParams);
     } catch (err) {
       stopped = true;
       params.warn?.(

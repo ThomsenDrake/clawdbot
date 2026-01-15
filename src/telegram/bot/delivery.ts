@@ -16,6 +16,27 @@ import type { TelegramContext } from "./types.js";
 
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
 
+/**
+ * Sanitize outbound message text to prevent raw API errors from reaching users.
+ * This is a final safety net - errors should be formatted earlier in the pipeline.
+ */
+function sanitizeOutboundText(text: string): string {
+  const trimmed = text.trim();
+
+  // Pattern 1: HTTP status code errors (e.g., "400 Incorrect role information")
+  if (/^\d{3}\s+/i.test(trimmed)) {
+    console.warn("[Telegram/Bot] Blocked raw API error from reaching user:", trimmed.slice(0, 100));
+    return "An error occurred. Please try again or use /new to start a fresh session.";
+  }
+
+  // Pattern 2: Role ordering errors that escaped earlier formatting
+  if (/incorrect role information|roles must alternate/i.test(trimmed)) {
+    return "Message ordering conflict - please try again. If this persists, use /new to start a fresh session.";
+  }
+
+  return text;
+}
+
 export async function deliverReplies(params: {
   replies: ReplyPayload[];
   chatId: string;
@@ -67,7 +88,7 @@ export async function deliverReplies(params: {
       });
       const fileName = media.fileName ?? (isGif ? "animation.gif" : "file");
       const file = new InputFile(media.buffer, fileName);
-      const caption = first ? (reply.text ?? undefined) : undefined;
+      const caption = first && reply.text ? sanitizeOutboundText(reply.text) : undefined;
       first = false;
       const replyToMessageId =
         replyToId && (replyToMode === "all" || !hasReplied) ? replyToId : undefined;
@@ -171,8 +192,9 @@ async function sendTelegramText(
   if (threadParams) {
     baseParams.message_thread_id = threadParams.message_thread_id;
   }
+  const sanitized = sanitizeOutboundText(text);
   const textMode = opts?.textMode ?? "markdown";
-  const htmlText = textMode === "html" ? text : markdownToTelegramHtml(text);
+  const htmlText = textMode === "html" ? sanitized : markdownToTelegramHtml(sanitized);
   try {
     const res = await bot.api.sendMessage(chatId, htmlText, {
       parse_mode: "HTML",
@@ -183,7 +205,7 @@ async function sendTelegramText(
     const errText = formatErrorMessage(err);
     if (PARSE_ERR_RE.test(errText)) {
       runtime.log?.(`telegram HTML parse failed; retrying without formatting: ${errText}`);
-      const fallbackText = opts?.plainText ?? text;
+      const fallbackText = opts?.plainText ?? sanitized;
       const res = await bot.api.sendMessage(chatId, fallbackText, {
         ...baseParams,
       });

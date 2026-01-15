@@ -133,6 +133,7 @@ export function createTelegramBot(opts: TelegramBotOptions) {
       : undefined;
 
   const bot = new Bot(opts.token, client ? { client } : undefined);
+
   bot.api.config.use(apiThrottler());
   bot.use(sequentialize(getTelegramSequentialKey));
 

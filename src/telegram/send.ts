@@ -61,6 +61,27 @@ const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity
 // Text beyond this must be sent as a separate follow-up message.
 const TELEGRAM_MAX_CAPTION_LENGTH = 1024;
 
+/**
+ * Sanitize outbound message text to prevent raw API errors from reaching users.
+ * This is a final safety net - errors should be formatted earlier in the pipeline.
+ */
+function sanitizeOutboundText(text: string): string {
+  const trimmed = text.trim();
+
+  // Pattern 1: HTTP status code errors (e.g., "400 Incorrect role information")
+  if (/^\d{3}\s+/i.test(trimmed)) {
+    console.warn("[Telegram] Blocked raw API error from reaching user:", trimmed.slice(0, 100));
+    return "An error occurred. Please try again or use /new to start a fresh session.";
+  }
+
+  // Pattern 2: Role ordering errors that escaped earlier formatting
+  if (/incorrect role information|roles must alternate/i.test(trimmed)) {
+    return "Message ordering conflict - please try again. If this persists, use /new to start a fresh session.";
+  }
+
+  return text;
+}
+
 function resolveToken(explicit: string | undefined, params: { accountId: string; token: string }) {
   if (explicit?.trim()) return explicit.trim();
   if (!params.token) {
@@ -202,7 +223,7 @@ export async function sendMessageTelegram(
     });
     const fileName = media.fileName ?? (isGif ? "animation.gif" : inferFilename(kind)) ?? "file";
     const file = new InputFile(media.buffer, fileName);
-    const trimmedText = text?.trim() || "";
+    const trimmedText = text ? sanitizeOutboundText(text) : "";
     // If text exceeds Telegram's caption limit, send media without caption
     // then send text as a separate follow-up message.
     const needsSeparateText = trimmedText.length > TELEGRAM_MAX_CAPTION_LENGTH;
@@ -314,8 +335,9 @@ export async function sendMessageTelegram(
   if (!text || !text.trim()) {
     throw new Error("Message must be non-empty for Telegram sends");
   }
+  const sanitized = sanitizeOutboundText(text);
   const textMode = opts.textMode ?? "markdown";
-  const htmlText = textMode === "html" ? text : markdownToTelegramHtml(text);
+  const htmlText = textMode === "html" ? sanitized : markdownToTelegramHtml(sanitized);
   const textParams = hasThreadParams
     ? {
         parse_mode: "HTML" as const,
